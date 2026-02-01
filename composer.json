@@ -4,15 +4,16 @@
     "type": "project",
     "license": "MIT",
     "require": {
-        "php": ">=8.1",
+        "php": ">=8.3",
         "ext-curl": "*",
-        "ext-json": "*"
+        "ext-json": "*",
+        "smi2/phpclickhouse": "^1.6",
+        "symfony/http-client": "^7.3",
     },
     "autoload": {
-        "files": [
-            "app/db.php",
-            "app/analytics.php"
-        ]
+        "psr-4": {
+            "App\\": "app/src/"
+        }
     },
     "scripts": {
         "generate": "php app/generate.php"

@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClickHouse Scoring Analytics</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+</head>
+<body class="bg-[#f8fafc] text-slate-900 font-sans">
+
+<div id="app" class="p-4 lg:p-6 max-w-[1400px] mx-auto" v-cloak>
+
+  <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+    <div>
+      <h1 class="text-xl font-bold tracking-tight text-slate-800">Scoring Analytics</h1>
+      <p class="text-[10px] font-bold text-indigo-500 uppercase tracking-widest">Backend: PHP v1 / ClickHouse</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <div v-if="error" class="text-rose-600 text-[10px] font-black px-3 py-2 bg-rose-50 rounded-lg border border-rose-100 uppercase">
+        {{ error }}
+      </div>
+      <button @click="fetchData" :disabled="loading" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2.5 rounded-xl text-sm font-bold shadow-md transition-all disabled:opacity-50">
+        {{ loading ? 'EXECUTING...' : 'RUN QUERY' }}
+      </button>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+    <aside class="lg:col-span-4 space-y-5">
+
+      <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+        <h2 class="text-[11px] font-black text-slate-400 uppercase mb-4 tracking-widest">Sort Result By</h2>
+        <div class="flex gap-2">
+          <select v-model="orderByConfig.field" class="flex-1 text-sm border rounded-xl p-2 bg-slate-50 outline-none">
+            <option value="total_points">Total Points</option>
+            <option value="events_count">Events Count</option>
+            <option v-for="dim in payload.group_by" :key="dim" :value="dim">{{ dim }}</option>
+          </select>
+          <button @click="toggleOrder" class="px-3 py-2 border rounded-xl bg-white hover:bg-slate-50 font-bold text-xs uppercase">
+            {{ orderByConfig.order }}
+          </button>
+        </div>
+      </div>
+
+      <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+        <h2 class="text-[11px] font-black text-slate-400 uppercase tracking-widest">Active Filters</h2>
+
+        <div>
+          <label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">Timeframe</label>
+          <div class="grid grid-cols-2 gap-2">
+            <input type="date" v-model="filters.date_from" class="text-xs border rounded-lg p-2 w-full">
+            <input type="date" v-model="filters.date_to" class="text-xs border rounded-lg p-2 w-full">
+          </div>
+        </div>
+
+        <div class="pt-3 border-t">
+          <div class="flex justify-between items-center mb-1">
+            <label class="text-[10px] font-bold text-slate-500 uppercase">Company</label>
+            <button @click="filters.companyId.include = !filters.companyId.include" :class="filters.companyId.include ? 'text-indigo-600' : 'text-rose-600'" class="text-[9px] font-black underline">
+              {{ filters.companyId.include ? 'INCLUDE' : 'EXCLUDE' }}
+            </button>
+          </div>
+          <input type="number" v-model="filters.companyId.value" placeholder="ID..." class="text-xs border rounded-lg p-2 w-full">
+        </div>
+
+        <div class="pt-3 border-t">
+          <div class="flex justify-between items-center mb-1">
+            <label class="text-[10px] font-bold text-slate-500 uppercase">User</label>
+            <button @click="filters.userId.include = !filters.userId.include" :class="filters.userId.include ? 'text-indigo-600' : 'text-rose-600'" class="text-[9px] font-black underline">
+              {{ filters.userId.include ? 'INCLUDE' : 'EXCLUDE' }}
+            </button>
+          </div>
+          <input type="number" v-model="filters.userId.value" placeholder="ID..." class="text-xs border rounded-lg p-2 w-full">
+        </div>
+
+        <div class="pt-3 border-t">
+          <label class="block text-[10px] font-bold text-slate-500 uppercase mb-2">Score Contexts</label>
+          <div class="flex flex-wrap gap-1">
+            <button v-for="ctx in ['SALES', 'MARKETING', 'CHURN', 'BILLING']"
+                    @click="toggleFilter('scoreContext', ctx)"
+                    :class="filters.scoreContext.includes(ctx) ? 'bg-indigo-600 text-white' : 'bg-slate-50 text-slate-500'"
+                    class="text-[9px] font-bold px-2 py-1 rounded border border-slate-200 transition">
+              {{ ctx }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-slate-900 p-5 rounded-2xl shadow-xl text-white">
+        <h2 class="text-[11px] font-black uppercase mb-4 opacity-40 tracking-widest italic text-center">Data Aggregation</h2>
+        <div class="grid grid-cols-1 gap-2">
+          <label v-for="(label, key) in allowedFields" :key="key"
+                 class="flex items-center justify-between p-3 rounded-xl hover:bg-white/10 cursor-pointer transition group"
+                 :class="payload.group_by.includes(key) ? 'bg-white/10' : 'opacity-60'">
+            <span class="text-xs font-bold">{{ label }}</span>
+            <input type="checkbox" :value="key"
+                   @change="handleDimensionChange(key)"
+                   :checked="payload.group_by.includes(key)"
+                   class="w-4 h-4 rounded accent-indigo-400">
+          </label>
+        </div>
+      </div>
+    </aside>
+
+    <main class="lg:col-span-8">
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden min-h-[500px]">
+        <table class="w-full text-left text-sm">
+          <thead class="bg-slate-50">
+          <tr>
+            <th v-for="col in payload.group_by" class="p-4 font-black uppercase text-[10px] text-slate-400 border-b">{{ col }}</th>
+            <th class="p-4 font-black uppercase text-[10px] text-slate-400 border-b text-right">Total Points</th>
+            <th class="p-4 font-black uppercase text-[10px] text-slate-400 border-b text-right">Decay</th>
+            <th class="p-4 font-black uppercase text-[10px] text-slate-400 border-b text-center">Health</th>
+          </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100">
+          <tr v-if="loading"><td :colspan="payload.group_by.length + 3" class="p-20 text-center animate-pulse text-slate-300 font-bold uppercase tracking-widest">Accessing ClickHouse Tables...</td></tr>
+          <tr v-else v-for="row in tableData" class="hover:bg-slate-50 transition">
+            <td v-for="col in payload.group_by" class="p-4 font-bold text-slate-700 capitalize">
+              {{ col === 'companyId' ? '#' + row[col] : row[col] || '—' }}
+            </td>
+            <td class="p-4 text-right font-black" :class="row.total_points < 0 ? 'text-rose-500' : 'text-emerald-600'">
+              {{ row.total_points }}
+            </td>
+            <td class="p-4 text-right font-mono text-slate-400">{{ row.decay_points || 0 }}</td>
+            <td class="p-4 text-center">
+                                <span :class="row.total_points > 100 ? 'bg-emerald-500 shadow-emerald-200' : row.total_points > 0 ? 'bg-amber-500 shadow-amber-200' : 'bg-rose-500 shadow-rose-200'"
+                                      class="w-2.5 h-2.5 rounded-full inline-block shadow-md"></span>
+            </td>
+          </tr>
+          <tr v-if="!loading && !tableData.length">
+            <td :colspan="payload.group_by.length + 3" class="p-20 text-center text-slate-400 italic font-medium">No results found. Adjust filters to broaden search.</td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+  const { createApp, ref, reactive, onMounted, watch } = Vue;
+
+  createApp({
+    setup() {
+      const loading = ref(false);
+      const error = ref(null);
+      const tableData = ref([]);
+
+      const allowedFields = {
+        companyId: 'Company Aggregation',
+        userId: 'Individual User',
+        scoreContext: 'Score Context',
+        day: 'Daily Time Series',
+        month: 'Monthly Rollup'
+      };
+
+      const orderByConfig = reactive({ field: 'total_points', order: 'desc' });
+
+      const filters = reactive({
+        date_from: "2025-11-01",
+        date_to: "2025-11-30",
+        companyId: { value: null, include: true },
+        userId: { value: null, include: true },
+        scoreContext: []
+      });
+
+      const payload = reactive({
+        group_by: ["companyId", "scoreContext"],
+        limit: 500,
+        order_by: []
+      });
+
+      const toggleOrder = () => orderByConfig.order = orderByConfig.order === 'desc' ? 'asc' : 'desc';
+
+      const toggleFilter = (key, val) => {
+        const idx = filters[key].indexOf(val);
+        idx > -1 ? filters[key].splice(idx, 1) : filters[key].push(val);
+        fetchData();
+      };
+
+      const handleDimensionChange = (key) => {
+        const idx = payload.group_by.indexOf(key);
+        if (idx > -1) {
+          payload.group_by.splice(idx, 1);
+        } else {
+          // Logic: cannot group by day and month simultaneously
+          if (key === 'day') {
+            const mIdx = payload.group_by.indexOf('month');
+            if (mIdx > -1) payload.group_by.splice(mIdx, 1);
+          }
+          if (key === 'month') {
+            const dIdx = payload.group_by.indexOf('day');
+            if (dIdx > -1) payload.group_by.splice(dIdx, 1);
+          }
+          payload.group_by.push(key);
+        }
+        fetchData();
+      };
+
+      const fetchData = async () => {
+        loading.value = true;
+        error.value = null;
+        try {
+          const finalPayload = {
+            filter: {
+              date_from: filters.date_from,
+              date_to: filters.date_to,
+              companyId: filters.companyId.value ? filters.companyId : undefined,
+              userId: filters.userId.value ? filters.userId : undefined,
+              scoreContext: filters.scoreContext.length ? { value: filters.scoreContext, include: true } : undefined
+            },
+            group_by: payload.group_by,
+            limit: payload.limit,
+            order_by: [{ field: orderByConfig.field, order: orderByConfig.order }]
+          };
+
+          const res = await axios.post('http://localhost:8080/api/v1/scoring-analytics', finalPayload);
+          tableData.value = res.data.data || res.data;
+        } catch (err) {
+          error.value = err.response?.data?.message || "Check API endpoint";
+          tableData.value = [];
+        } finally {
+          loading.value = false;
+        }
+      };
+
+      watch([orderByConfig, () => filters.date_from, () => filters.date_to], () => fetchData());
+
+      onMounted(() => fetchData());
+
+      return { loading, error, filters, payload, tableData, allowedFields, orderByConfig, toggleOrder, toggleFilter, handleDimensionChange, fetchData };
+    }
+  }).mount('#app');
+</script>
+
+<style>[v-cloak] { display: none; }</style>
+</body>
+</html>
